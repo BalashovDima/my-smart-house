@@ -1,0 +1,15 @@
+# Local board configuration (copy config.example.h -> config.h)
+firmware/*/src/config.h
+
+# Generated LittleFS image contents (built from web/)
+firmware/*/data/
+
+# PlatformIO / Node build output
+.pio/
+**/node_modules/
+**/dist/
+
+# Editor / OS noise
+.vscode/
+.DS_Store
+*.log

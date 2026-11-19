@@ -1,52 +1,57 @@
 # my-smart-house
 
-Home telemetry: backup power (pack voltage + per-cell voltages), room/outdoor
+Home telemetry: backup power (pack + per-cell voltages), room/outdoor
 temperature, humidity, pressure, mains voltage and power consumption.
-
-## Status
-
-Greenfield: only `.gitattributes` is committed. The layout and commands below
-are the agreed plan. When real code lands, trust code/config over this file and
-update it.
 
 ## Layout
 
-- `firmware/` — PlatformIO projects, ESP32 + ESP8266 (one project/env per board)
-- `server/` — Go backend: MQTT subscriber + HTTP/JSON API
-- `frontend/` — React + Vite (TypeScript) dashboard
+- `firmware/battery-monitor/` — ESP32 PlatformIO project (first device)
+- `firmware/` — future ESP32/ESP8266 projects, one PlatformIO project each
+- `server/` — Go backend: MQTT subscriber + HTTP/JSON API (not started)
+- `frontend/` — React + Vite dashboard (not started)
+- `firmware/battery-monitor/web/` — Preact UI compiled into LittleFS, **not** the
+  `frontend/` dashboard
 
-Each directory is independent; no root workspace tooling. `cd` in before running
-commands.
+Each component is independent; there is no root workspace tooling.
 
-## Commands
+## Battery monitor
 
-Firmware (from `firmware/<project>/`):
+Commands, from `firmware/battery-monitor/`:
 
-- Build one env: `pio run -e <env>`
-- Upload / monitor: `pio run -e <env> -t upload`, `pio device monitor -e <env>`
+- Build UI: `cd web && npm ci && npm run build` → writes `../data/` (gitignored)
+- Compile: `pio run`
+- Flash app / filesystem: `pio run -t upload`, `pio run -t uploadfs`
+- Filesystem image only: `pio run -t buildfs`
+- Serial: `pio device monitor` (115200)
 
-Server (from `server/`):
+`pio run -t uploadfs` does not build the UI and does not erase existing files.
+Rebuild the UI first whenever anything under `web/` changes.
 
-- `go test ./...`
-- One test: `go test ./internal/<pkg> -run TestName`
-- Run: `go run ./cmd/<app>`
+Local board config: `src/config.h` is gitignored; copy `src/config.example.h`.
+Pins, settle time, sample interval, and AP name live there. Wi-Fi credentials
+and calibration live in NVS (namespace `battmon`), not in `config.h`.
 
-Frontend (from `frontend/`): `npm ci`, `npm run dev`, `npm run build`, `npm run lint`
+Constraints:
 
-No CI or pre-commit hooks exist yet; run the relevant command yourself before
-reporting work as done.
-
-## Constraints agents get wrong
-
-- ESP8266 has one ADC (`A0`, 0–1.0 V raw; DevKit boards divide down to ~3.3 V).
-  ESP32 ADC2 pins stop working while Wi-Fi is active — use ADC1 (GPIO32–39) for
-  always-on sensors.
-- Never route mains voltage into an ADC; require an isolated/transformer stage
-  and keep that assumption in pin docs and comments.
-- ESP8266 and ESP32 are not source-compatible: guard chip-specific code with
-  `#ifdef ESP32` / `#ifdef ESP8266` rather than copying drivers.
-- Don't commit Wi-Fi/MQTT credentials; firmware secrets go in gitignored config.
-- Firmware and server must agree on MQTT topic scheme and payload schema; change
-  both in the same commit.
-- Prefer integer units (mV, deci-°C) over floats on ESP8266.
+- Platform is pinned to `espressif32@6.9.0` (Arduino core 2.0.17). Core 3.x
+  renames ADC attenuation symbols and changes `analogReadMilliVolts()`. Don't
+  bump without revalidating the ADC code.
+- ADC inputs are GPIO32–35 (ADC1 only; ADC2 dies when Wi-Fi is on). GPIO25
+  switches op-amp power: 100 ms settle, 15-sample median burst, then off.
+- `board_build.partitions = huge_app.csv`: 3 MB app, ~0.9 MB LittleFS, no OTA.
+  The default 1.2 MB app slot is too small for Wi-Fi + `WebServer`.
+- The device uses the synchronous `WebServer`, not ESPAsyncWebServer. Keep HTTP
+  handlers short; POST JSON is read from `arg("plain")`.
+- Calibration contract: `cellMv = scale * pinMv + offsetMv` per channel, fit
+  from two points. Changing the formula requires changing `web/src/app.jsx` too.
 - `.gitattributes` enforces LF; don't add CRLF files.
+
+Safety: never route a cell or mains voltage directly into an ADC; the op-amp
+stages are assumed to provide attenuation/isolation.
+
+## Still to decide
+
+- MQTT topic/payload schema shared by firmware and the future server; change
+  both in the same commit.
+- Shared ESP8266/ESP32 code: guard chip-specific APIs with `#ifdef ESP32` /
+  `#ifdef ESP8266`. ESP8266 has a single ADC (`A0`, 0–1.0 V raw).
