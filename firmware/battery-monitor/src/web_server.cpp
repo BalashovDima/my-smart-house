@@ -53,6 +53,7 @@ void handleStatus() {
   doc["uptimeMs"] = now;
   doc["calibrated"] = cal.calibrated;
   doc["sampleIntervalMs"] = SAMPLE_INTERVAL_MS;
+  doc["adcCalSource"] = adcCalibrationSource();
 
   JsonObject wifi = doc["wifi"].to<JsonObject>();
   wifi["mode"] = wifi_manager::modeLabel();

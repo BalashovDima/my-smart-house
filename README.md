@@ -27,7 +27,10 @@ compiled into the firmware's LittleFS image (see `web/`).
 | Op-amp analog ground | GND | Keep the ADC input within 0–3.1 V |
 
 Firmware asserts GPIO25, waits `OPAMP_SETTLE_MS` (100 ms), samples each channel
-15 times (median), then powers the op-amps down until the next burst (1 s).
+48 times (median of 8-sample block means), then powers the op-amps down until
+the next burst (1 s). Raw counts are converted to millivolts with the ESP32
+eFuse ADC calibration (`esp_adc_cal`), selected once at boot; the result is
+reported as `adcCalSource` by `GET /api/status`.
 
 ### Configure and build
 
@@ -81,13 +84,17 @@ Two-point procedure (per cell, ideally with a bench supply):
 3. Press **Compute scale & offset**, check the preview, then **Save
    calibration**.
 
+Pick both points close to the cell's real operating voltage (for LiFePO4, e.g.
+3.2 V and 3.45 V), not spread across 0–4 V: the fit is an affine line and is
+only exact at the two points.
+
 The pack/min/max/spread values are sums/differences of calibrated cell values,
 so they inherit any calibration error.
 
 ### HTTP API
 
 - `GET /api/status` — Wi-Fi state, per-channel raw/pin/cell mV, pack/min/max/
-  spread, calibration, sample age
+  spread, calibration, sample age, ADC calibration source
 - `POST /api/calibration` — `{ "channels": [{ "scale": 1.02, "offsetMv": -12.5 }, ...] }`, persists to NVS
 - `GET /api/wifi/scan` — network list (scan briefly interrupts the AP)
 - `POST /api/wifi` — `{ "ssid": "...", "password": "..." }`, persists and reboots

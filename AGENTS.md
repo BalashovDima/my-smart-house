@@ -34,10 +34,14 @@ and calibration live in NVS (namespace `battmon`), not in `config.h`.
 Constraints:
 
 - Platform is pinned to `espressif32@6.9.0` (Arduino core 2.0.17). Core 3.x
-  renames ADC attenuation symbols and changes `analogReadMilliVolts()`. Don't
-  bump without revalidating the ADC code.
+  renames ADC attenuation symbols (Arduino's `ADC_11db` is `ADC_ATTEN_DB_12`
+  here) and changes `analogReadMilliVolts()`. Don't bump without revalidating
+  the ADC code.
 - ADC inputs are GPIO32–35 (ADC1 only; ADC2 dies when Wi-Fi is on). GPIO25
-  switches op-amp power: 100 ms settle, 15-sample median burst, then off.
+  switches op-amp power: settle (`OPAMP_SETTLE_MS`), 48-sample burst reported as
+  the median of 8-sample block means, then off. Raw counts are converted with
+  one boot-time `esp_adc_cal` characterization (eFuse TP → eFuse Vref →
+  default Vref), so `adc.cpp` needs `driver/adc.h` + `esp_adc_cal.h`.
 - `board_build.partitions = huge_app.csv`: 3 MB app, ~0.9 MB LittleFS, no OTA.
   The default 1.2 MB app slot is too small for Wi-Fi + `WebServer`.
 - The device uses the synchronous `WebServer`, not ESPAsyncWebServer. Keep HTTP

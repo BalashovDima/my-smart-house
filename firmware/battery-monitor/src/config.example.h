@@ -27,7 +27,10 @@ static constexpr int ADC_CHANNEL_COUNT = sizeof(ADC_PINS) / sizeof(ADC_PINS[0]);
 static constexpr uint32_t OPAMP_SETTLE_MS = 100;
 // Time between measurement bursts.
 static constexpr uint32_t SAMPLE_INTERVAL_MS = 1000;
-// Odd number; median helps against Wi-Fi TX noise.
-static constexpr int ADC_SAMPLES_PER_READ = 15;
+// Burst samples per channel, grouped into blocks. The reported count is the
+// median of the block means: robust against Wi-Fi TX spikes, but with the
+// noise of a much longer average. Must be a multiple of ADC_BLOCK_SIZE.
+static constexpr int ADC_SAMPLES_PER_READ = 48;
+static constexpr int ADC_BLOCK_SIZE = 8;
 
 #define NVS_NAMESPACE "battmon"
