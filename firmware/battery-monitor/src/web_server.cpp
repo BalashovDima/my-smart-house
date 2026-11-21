@@ -86,6 +86,11 @@ void handleStatus() {
     chCal["scale"] = cal.ch[i].scale;
     chCal["offsetMv"] = cal.ch[i].offsetMv;
 
+    JsonObject chFit = chCal["fit"].to<JsonObject>();
+    chFit["points"] = cal.fit[i].points;
+    chFit["rmsMv"] = cal.fit[i].rmsMv;
+    chFit["maxResidualMv"] = cal.fit[i].maxResidualMv;
+
     if (haveSample) {
       packMv += cellMv;
       if (i == 0 || cellMv < minMv) minMv = cellMv;
@@ -134,6 +139,24 @@ void handleCalibration() {
       return;
     }
     next.ch[i] = candidate;
+
+    // Optional: the UI reports how the affine pair was fitted.
+    JsonVariant fitVar = channels[i]["fit"];
+    if (!fitVar.isNull()) {
+      if (!fitVar.is<JsonObject>()) {
+        sendError(400, "fit must be an object");
+        return;
+      }
+      JsonObject fitObj = fitVar.as<JsonObject>();
+      const uint16_t points = fitObj["points"] | 0;
+      const ChannelFit fit{points, fitObj["rmsMv"] | 0.0f,
+                           fitObj["maxResidualMv"] | 0.0f};
+      if (!calibrationFitIsValid(fit)) {
+        sendError(400, "calibration fit out of range");
+        return;
+      }
+      next.fit[i] = fit;
+    }
   }
   next.calibrated = true;
 

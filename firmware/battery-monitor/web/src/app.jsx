@@ -1,18 +1,66 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 
+import { fitLinear, fitTone } from './fit.js';
+
 const CHANNEL_COUNT = 4;
+const POINTS_KEY = 'battmon.calPoints.v1';
+const MAX_POINTS = 50;
 
 function emptyCalibration() {
   return Array.from({ length: CHANNEL_COUNT }, () => ({ scale: 1, offsetMv: 0 }));
 }
 
-function emptyPoints() {
-  return Array.from({ length: CHANNEL_COUNT }, () => ({
-    aRaw: '',
-    aCell: '',
-    bRaw: '',
-    bCell: '',
-  }));
+function emptyFits() {
+  return Array(CHANNEL_COUNT).fill(null);
+}
+
+function makeId() {
+  return `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function emptyPoint() {
+  return {
+    id: makeId(),
+    label: '',
+    capturedAt: '',
+    cells: Array.from({ length: CHANNEL_COUNT }, () => ({ cell: '', pin: '' })),
+  };
+}
+
+function normalizePoint(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : makeId(),
+    label: typeof raw.label === 'string' ? raw.label : '',
+    capturedAt: typeof raw.capturedAt === 'string' ? raw.capturedAt : '',
+    cells: Array.from({ length: CHANNEL_COUNT }, (_, index) => {
+      const cell = raw.cells?.[index] ?? {};
+      return {
+        cell: typeof cell.cell === 'string' ? cell.cell : '',
+        pin: typeof cell.pin === 'string' ? cell.pin : '',
+      };
+    }),
+  };
+}
+
+function loadPoints() {
+  try {
+    const raw = window.localStorage.getItem(POINTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.slice(0, MAX_POINTS).map(normalizePoint).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function storePoints(points) {
+  try {
+    window.localStorage.setItem(POINTS_KEY, JSON.stringify(points.slice(0, MAX_POINTS)));
+  } catch {
+    // Private mode or quota: points simply do not survive a reload.
+  }
 }
 
 async function request(path, options) {
@@ -56,6 +104,8 @@ const numberOr = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const textOr = (value) => (typeof value === 'string' ? value.trim() : '');
+
 function Pill({ children, tone = 'slate' }) {
   const tones = {
     slate: 'border-slate-700 bg-slate-800/70 text-slate-300',
@@ -70,50 +120,231 @@ function Pill({ children, tone = 'slate' }) {
   );
 }
 
-function PointRow({ label, raw, cell, onRaw, onCell, onUseLive }) {
+function fitSummary(fit) {
+  return `${fit.n} pts · rms ${fit.rmsMv.toFixed(1)} mV · max ${fit.maxResidualMv.toFixed(1)} mV`;
+}
+
+function fitTextTone(fit) {
+  const tone = fitTone(fit);
+  if (tone === 'green') return 'text-emerald-300';
+  if (tone === 'amber') return 'text-amber-300';
+  return 'text-rose-400';
+}
+
+const inputClass =
+  'w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 focus:border-sky-500 focus:outline-none';
+
+function PointCell({ channel, value, onChange, onUseLive }) {
   return (
-    <div class="grid grid-cols-[1.5rem_1fr_1fr] items-end gap-2">
-      <span class="pb-2 font-semibold text-slate-400">{label}</span>
-      <label class="block">
-        <span class="mb-1 block text-slate-400">ADC pin mV</span>
-        <div class="flex gap-1">
-          <input
-            type="number"
-            step="any"
-            value={raw}
-            onInput={(event) => onRaw(event.currentTarget.value)}
-            class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 focus:border-sky-500 focus:outline-none"
-          />
-          <button
-            type="button"
-            onClick={onUseLive}
-            title="Use the current live ADC reading"
-            class="rounded border border-slate-700 px-2 text-slate-300 hover:border-sky-500 hover:text-sky-300"
-          >
-            live
-          </button>
-        </div>
-      </label>
-      <label class="block">
-        <span class="mb-1 block text-slate-400">Actual cell mV</span>
+    <div class="flex flex-col gap-1">
+      <input
+        type="number"
+        step="any"
+        value={value.cell}
+        placeholder="cell mV"
+        onInput={(event) => onChange({ cell: event.currentTarget.value })}
+        class={inputClass}
+        aria-label={`Cell ${channel + 1} multimeter mV`}
+      />
+      <div class="flex gap-1">
         <input
           type="number"
           step="any"
-          value={cell}
-          onInput={(event) => onCell(event.currentTarget.value)}
-          placeholder="from multimeter"
-          class="w-full rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100 focus:border-sky-500 focus:outline-none"
+          value={value.pin}
+          placeholder="pin mV"
+          onInput={(event) => onChange({ pin: event.currentTarget.value })}
+          class={inputClass}
+          aria-label={`Cell ${channel + 1} ADC pin mV`}
         />
-      </label>
+        <button
+          type="button"
+          onClick={onUseLive}
+          title="Use the current live ADC reading"
+          class="shrink-0 rounded border border-slate-700 px-2 text-slate-300 hover:border-sky-500 hover:text-sky-300"
+        >
+          live
+        </button>
+      </div>
     </div>
   );
 }
 
-function CellCard({ index, channel, cal, points, error, onCal, onPoint, onUseLive, onApply }) {
+function CalibrationPanel({
+  livePins,
+  points,
+  stale,
+  hasSample,
+  adcCalSource,
+  fitErrors,
+  onAddRow,
+  onCaptureAll,
+  onClear,
+  onRowChange,
+  onCellChange,
+  onUseLive,
+  onDeleteRow,
+  onFit,
+}) {
+  const canCapture = !stale && hasSample && livePins.length === CHANNEL_COUNT;
+
+  return (
+    <section class="space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-semibold">Calibration points</h2>
+          <p class="text-sm text-slate-400">
+            One row per pack state. Measure the cell voltage with a multimeter
+            across the board's sense pins (pack at rest, charger and load off),
+            capture the matching ADC pin mV, and repeat after the pack has
+            discharged by at least 200 mV per cell. Three or more rows give a
+            residual you can judge.
+          </p>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          {adcCalSource ? (
+            <Pill tone={adcCalSource === 'default-vref' ? 'amber' : 'green'}>
+              ADC {adcCalSource}
+            </Pill>
+          ) : null}
+          <Pill>{points.length} row{points.length === 1 ? '' : 's'}</Pill>
+        </div>
+      </div>
+
+      {adcCalSource === 'default-vref' ? (
+        <p class="text-xs text-amber-300">
+          The ESP32 has no eFuse ADC calibration data, so pin mV uses a nominal
+          reference. The fit still corrects the front end, but expect a few mV
+          more error.
+        </p>
+      ) : null}
+
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onCaptureAll}
+          disabled={!canCapture}
+          class="rounded-lg border border-sky-600/60 bg-sky-500/10 px-3 py-1.5 text-sm font-medium text-sky-300 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Capture all live
+        </button>
+        <button
+          type="button"
+          onClick={onAddRow}
+          class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 hover:border-sky-500 hover:text-sky-300"
+        >
+          Add empty row
+        </button>
+        <button
+          type="button"
+          onClick={onFit}
+          disabled={points.length === 0}
+          class="rounded-lg bg-sky-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+        >
+          Fit all channels
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          disabled={points.length === 0}
+          class="rounded-lg border border-rose-700/60 px-3 py-1.5 text-sm font-medium text-rose-300 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Clear points
+        </button>
+        {stale ? (
+          <span class="text-xs text-amber-300">
+            Sample is stale; live capture is disabled.
+          </span>
+        ) : null}
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[44rem] border-collapse text-xs">
+          <thead>
+            <tr class="text-left text-slate-400">
+              <th class="w-40 pb-2 font-medium">State</th>
+              {Array.from({ length: CHANNEL_COUNT }, (_, index) => (
+                <th key={index} class="pb-2 pl-2 font-medium">
+                  Cell {index + 1}
+                  <span class="ml-1 font-normal text-slate-500 tabular-nums">
+                    live {hasSample ? (livePins[index] ?? '—') : '—'} mV
+                  </span>
+                </th>
+              ))}
+              <th class="w-8 pb-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {points.length === 0 ? (
+              <tr>
+                <td colspan={CHANNEL_COUNT + 2} class="py-3 text-slate-500">
+                  No points yet. Capture the current pack state, or add a row and
+                  type the values in.
+                </td>
+              </tr>
+            ) : null}
+            {points.map((point, rowIndex) => (
+              <tr key={point.id} class="border-t border-slate-800 align-top">
+                <td class="py-2 pr-2">
+                  <input
+                    value={point.label}
+                    placeholder={`point ${rowIndex + 1}`}
+                    onInput={(event) => onRowChange(point.id, { label: event.currentTarget.value })}
+                    class={inputClass}
+                  />
+                  {point.capturedAt && !Number.isNaN(new Date(point.capturedAt).getTime()) ? (
+                    <span class="mt-1 block text-[0.65rem] text-slate-500">
+                      {new Date(point.capturedAt).toLocaleString()}
+                    </span>
+                  ) : null}
+                </td>
+                {point.cells.map((value, channelIndex) => (
+                  <td key={channelIndex} class="py-2 pl-2">
+                    <PointCell
+                      channel={channelIndex}
+                      value={value}
+                      onChange={(patch) => onCellChange(point.id, channelIndex, patch)}
+                      onUseLive={() => onUseLive(point.id, channelIndex)}
+                    />
+                  </td>
+                ))}
+                <td class="py-2 pl-2 align-middle">
+                  <button
+                    type="button"
+                    title="Delete this point"
+                    onClick={() => onDeleteRow(point.id)}
+                    class="rounded border border-slate-800 px-2 py-1 text-slate-500 hover:border-rose-600/60 hover:text-rose-300"
+                  >
+                    ×
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {fitErrors.some(Boolean) ? (
+        <div class="space-y-1 text-xs text-rose-300">
+          {fitErrors.map((message, index) =>
+            message ? (
+              <p key={index}>
+                Cell {index + 1}: {message}
+              </p>
+            ) : null,
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function CellCard({ index, channel, cal, fit, error, onCal }) {
   const scale = numberOr(cal.scale, NaN);
   const offsetMv = numberOr(cal.offsetMv, NaN);
   const previewValid = Number.isFinite(scale) && Number.isFinite(offsetMv);
   const previewMv = previewValid ? scale * channel.pinMv + offsetMv : null;
+  const savedFit = channel.calibration?.fit;
+  const hasSavedFit = savedFit && savedFit.points > 0;
 
   return (
     <section class="flex flex-col gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
@@ -168,39 +399,29 @@ function CellCard({ index, channel, cal, points, error, onCal, onPoint, onUseLiv
         </label>
       </div>
 
-      <details class="rounded-lg bg-slate-950/70 p-3 text-xs">
-        <summary class="cursor-pointer text-slate-300">Two-point calibration</summary>
-        <p class="mt-2 text-slate-500">
-          Apply two known cell voltages with a bench supply or calibrator. Raw
-          values are the ADC pin mV readings at each point.
-        </p>
-        <div class="mt-3 space-y-2">
-          <PointRow
-            label="A"
-            raw={points.aRaw}
-            cell={points.aCell}
-            onRaw={(value) => onPoint({ aRaw: value })}
-            onCell={(value) => onPoint({ aCell: value })}
-            onUseLive={() => onUseLive('aRaw')}
-          />
-          <PointRow
-            label="B"
-            raw={points.bRaw}
-            cell={points.bCell}
-            onRaw={(value) => onPoint({ bRaw: value })}
-            onCell={(value) => onPoint({ bCell: value })}
-            onUseLive={() => onUseLive('bRaw')}
-          />
-        </div>
-        <button
-          type="button"
-          onClick={onApply}
-          class="mt-3 rounded border border-sky-600/60 bg-sky-500/10 px-3 py-1.5 font-medium text-sky-300 hover:bg-sky-500/20"
-        >
-          Compute scale &amp; offset
-        </button>
-        {error ? <p class="mt-2 text-rose-400">{error}</p> : null}
-      </details>
+      <div class="space-y-1 text-xs">
+        {fit && !fit.error ? (
+          <p class={fitTextTone(fit)}>
+            Fit: {fitSummary(fit)}
+            <span class="ml-1 text-slate-500">
+              (span {Math.round(fit.pinSpanMv)} mV
+              {fit.ignoredRows > 0
+                ? `, ${fit.ignoredRows} incomplete row${fit.ignoredRows === 1 ? '' : 's'} ignored`
+                : ''}
+              )
+            </span>
+          </p>
+        ) : null}
+        {hasSavedFit ? (
+          <p class="text-slate-500">
+            Saved: {savedFit.points} pts · rms {Number(savedFit.rmsMv).toFixed(1)} mV
+            · max {Number(savedFit.maxResidualMv).toFixed(1)} mV
+          </p>
+        ) : (
+          <p class="text-slate-500">No fit recorded for this channel.</p>
+        )}
+        {error ? <p class="text-rose-400">{error}</p> : null}
+      </div>
     </section>
   );
 }
@@ -210,8 +431,9 @@ export function App() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [cal, setCal] = useState(emptyCalibration);
-  const [points, setPoints] = useState(emptyPoints);
-  const [calErrors, setCalErrors] = useState(() => Array(CHANNEL_COUNT).fill(''));
+  const [points, setPoints] = useState(loadPoints);
+  const [fits, setFits] = useState(emptyFits);
+  const [fitErrors, setFitErrors] = useState(() => Array(CHANNEL_COUNT).fill(''));
   const [savingCal, setSavingCal] = useState(false);
   const [wifiForm, setWifiForm] = useState({ ssid: '', password: '' });
   const [networks, setNetworks] = useState(null);
@@ -258,6 +480,12 @@ export function App() {
     }
   }, [status]);
 
+  useEffect(() => {
+    storePoints(points);
+    setFits(emptyFits());
+    setFitErrors(Array(CHANNEL_COUNT).fill(''));
+  }, [points]);
+
   const refreshStatus = async () => {
     try {
       setStatus(await request('/api/status'));
@@ -270,54 +498,104 @@ export function App() {
     setCal((prev) => prev.map((value, i) => (i === index ? { ...value, ...patch } : value)));
   };
 
-  const updatePoint = (index, patch) => {
-    setPoints((prev) => prev.map((value, i) => (i === index ? { ...value, ...patch } : value)));
-  };
-
   const setCalError = (index, message) => {
-    setCalErrors((prev) => prev.map((value, i) => (i === index ? message : value)));
+    setFitErrors((prev) => prev.map((value, i) => (i === index ? message : value)));
   };
 
-  const useLiveReading = (index, field) => {
+  const updateRow = (id, patch) => {
+    setPoints((prev) =>
+      prev.map((point) => (point.id === id ? { ...point, ...patch } : point)),
+    );
+  };
+
+  const deleteRow = (id) => {
+    setPoints((prev) => prev.filter((point) => point.id !== id));
+  };
+
+  const updateCell = (id, index, patch) => {
+    setPoints((prev) =>
+      prev.map((point) =>
+        point.id === id
+          ? {
+              ...point,
+              cells: point.cells.map((cell, i) => (i === index ? { ...cell, ...patch } : cell)),
+            }
+          : point,
+      ),
+    );
+  };
+
+  const useLiveReading = (id, index) => {
     const mv = status?.channels?.[index]?.pinMv;
     if (mv === undefined) return;
-    updatePoint(index, { [field]: String(mv) });
+    updateCell(id, index, { pin: String(mv) });
   };
 
-  const applyPoints = (index) => {
-    const p = points[index];
-    if (p.aRaw === '' || p.aCell === '' || p.bRaw === '' || p.bCell === '') {
-      setCalError(index, 'Fill all four fields.');
+  const captureAllLive = () => {
+    if (!status?.channels) return;
+    if (status.lastSampleSeq === 0) {
+      setError('No sample yet; wait for the first burst.');
       return;
     }
-    const aRaw = Number(p.aRaw);
-    const aCell = Number(p.aCell);
-    const bRaw = Number(p.bRaw);
-    const bCell = Number(p.bCell);
-    if (![aRaw, aCell, bRaw, bCell].every(Number.isFinite)) {
-      setCalError(index, 'Values must be numbers.');
+    if (status.lastSampleAgeMs > 5000) {
+      setError('The last sample is stale; wait for a fresh reading before capturing.');
       return;
     }
-    const rawDelta = bRaw - aRaw;
-    if (Math.abs(rawDelta) < 1) {
-      setCalError(index, 'Point A and B raw readings are too close.');
-      return;
+    const row = emptyPoint();
+    row.capturedAt = new Date().toISOString();
+    row.cells = status.channels.map((channel) => ({ cell: '', pin: String(channel.pinMv) }));
+    setPoints((prev) => [...prev, row].slice(0, MAX_POINTS));
+    setNotice('Captured live pin mV for all cells. Add the multimeter values.');
+  };
+
+  const addEmptyRow = () => {
+    setPoints((prev) => [...prev, emptyPoint()].slice(0, MAX_POINTS));
+  };
+
+  const clearPoints = () => {
+    if (points.length === 0) return;
+    if (!window.confirm('Delete all captured calibration points?')) return;
+    setPoints([]);
+  };
+
+  const fitAll = () => {
+    const nextCal = [...cal];
+    const nextFits = emptyFits();
+    const nextErrors = Array(CHANNEL_COUNT).fill('');
+
+    for (let index = 0; index < CHANNEL_COUNT; index++) {
+      const series = [];
+      let partial = 0;
+      for (const row of points) {
+        const pin = textOr(row.cells[index]?.pin);
+        const cell = textOr(row.cells[index]?.cell);
+        if (pin === '' && cell === '') continue;
+        if (pin === '' || cell === '') {
+          partial += 1;
+          continue;
+        }
+        series.push({ x: Number(pin), y: Number(cell) });
+      }
+
+      const fit = fitLinear(series);
+      if (fit.error) {
+        nextErrors[index] = fit.error;
+        continue;
+      }
+
+      const appliedScale = Number(fit.scale.toFixed(6));
+      const appliedOffset = Number(fit.offsetMv.toFixed(2));
+      nextCal[index] = { scale: appliedScale, offsetMv: appliedOffset };
+      nextFits[index] = { ...fit, appliedScale, appliedOffset, ignoredRows: partial };
     }
-    const scale = (bCell - aCell) / rawDelta;
-    const offsetMv = aCell - scale * aRaw;
-    if (!(scale > 0)) {
-      setCalError(index, 'Computed scale must be positive.');
-      return;
+
+    setCal(nextCal);
+    setFits(nextFits);
+    setFitErrors(nextErrors);
+    if (nextFits.some(Boolean)) {
+      setNotice('Fit applied. Review the preview, then save the calibration.');
+      setError('');
     }
-    if (Math.abs(offsetMv) > 20000) {
-      setCalError(index, 'Computed offset is out of range.');
-      return;
-    }
-    updateCal(index, {
-      scale: Number(scale.toFixed(6)),
-      offsetMv: Number(offsetMv.toFixed(2)),
-    });
-    setCalError(index, '');
   };
 
   const savedCalibration = status
@@ -348,10 +626,26 @@ export function App() {
     setNotice('');
     try {
       await postJson('/api/calibration', {
-        channels: cal.map((c) => ({
-          scale: numberOr(c.scale),
-          offsetMv: numberOr(c.offsetMv),
-        })),
+        channels: cal.map((c, index) => {
+          const entry = {
+            scale: numberOr(c.scale),
+            offsetMv: numberOr(c.offsetMv),
+          };
+          const fit = fits[index];
+          if (
+            fit &&
+            !fit.error &&
+            entry.scale === fit.appliedScale &&
+            entry.offsetMv === fit.appliedOffset
+          ) {
+            entry.fit = {
+              points: fit.n,
+              rmsMv: Number(fit.rmsMv.toFixed(3)),
+              maxResidualMv: Number(fit.maxResidualMv.toFixed(3)),
+            };
+          }
+          return entry;
+        }),
       });
       setNotice('Calibration saved to NVS.');
       await refreshStatus();
@@ -435,7 +729,9 @@ export function App() {
   }
 
   const wifi = status?.wifi;
-  const stale = status && status.lastSampleAgeMs > 5000;
+  const stale = status ? status.lastSampleAgeMs > 5000 : false;
+  const hasSample = Boolean(status && status.lastSampleSeq > 0);
+  const livePins = status?.channels?.map((channel) => channel.pinMv) ?? [];
 
   return (
     <div class="min-h-screen">
@@ -474,8 +770,8 @@ export function App() {
 
         {status && !status.calibrated ? (
           <div class="rounded-lg border border-amber-600/50 bg-amber-500/10 p-4 text-sm text-amber-200">
-            Readings are uncalibrated: scale 1.0 / offset 0 mV. Run the two-point
-            calibration below and save.
+            Readings are uncalibrated: scale 1.0 / offset 0 mV. Capture
+            calibration points below, fit, and save.
           </div>
         ) : null}
 
@@ -520,6 +816,23 @@ export function App() {
           </div>
         </section>
 
+        <CalibrationPanel
+          livePins={livePins}
+          points={points}
+          stale={stale}
+          hasSample={hasSample}
+          adcCalSource={status?.adcCalSource}
+          fitErrors={fitErrors}
+          onAddRow={addEmptyRow}
+          onCaptureAll={captureAllLive}
+          onClear={clearPoints}
+          onRowChange={updateRow}
+          onCellChange={updateCell}
+          onUseLive={useLiveReading}
+          onDeleteRow={deleteRow}
+          onFit={fitAll}
+        />
+
         <section class="space-y-3">
           <div class="flex flex-wrap items-end justify-between gap-2">
             <div>
@@ -553,12 +866,9 @@ export function App() {
                   index={index}
                   channel={channel}
                   cal={cal[index]}
-                  points={points[index]}
-                  error={calErrors[index]}
+                  fit={fits[index]}
+                  error={fitErrors[index]}
                   onCal={(patch) => updateCal(index, patch)}
-                  onPoint={(patch) => updatePoint(index, patch)}
-                  onUseLive={(field) => useLiveReading(index, field)}
-                  onApply={() => applyPoints(index)}
                 />
               ))}
             </div>

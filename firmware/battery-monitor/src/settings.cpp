@@ -7,7 +7,9 @@
 namespace {
 
 Preferences s_prefs;
-constexpr uint8_t CAL_VERSION = 1;
+// v2 added per-channel fit provenance (cal_pts/rms/mx). Older records still
+// load: the fit fields default to zero, meaning "not recorded".
+constexpr uint8_t CAL_VERSION = 2;
 
 }  // namespace
 
@@ -26,13 +28,26 @@ Calibration loadCalibration() {
   for (int i = 0; i < ADC_CHANNEL_COUNT; i++) {
     char scaleKey[16];
     char offsetKey[16];
+    char pointsKey[16];
+    char rmsKey[16];
+    char maxKey[16];
     snprintf(scaleKey, sizeof(scaleKey), "cal_s%d", i);
     snprintf(offsetKey, sizeof(offsetKey), "cal_o%d", i);
+    snprintf(pointsKey, sizeof(pointsKey), "cal_pts%d", i);
+    snprintf(rmsKey, sizeof(rmsKey), "cal_rms%d", i);
+    snprintf(maxKey, sizeof(maxKey), "cal_mx%d", i);
 
     cal.ch[i].scale = s_prefs.getFloat(scaleKey, 1.0f);
     cal.ch[i].offsetMv = s_prefs.getFloat(offsetKey, 0.0f);
     if (!calibrationChannelIsValid(cal.ch[i])) {
       cal.ch[i] = ChannelCalibration{};
+    }
+
+    cal.fit[i] = ChannelFit{s_prefs.getUShort(pointsKey, 0),
+                            s_prefs.getFloat(rmsKey, 0.0f),
+                            s_prefs.getFloat(maxKey, 0.0f)};
+    if (!calibrationFitIsValid(cal.fit[i])) {
+      cal.fit[i] = ChannelFit{};
     }
   }
   return cal;
@@ -44,10 +59,19 @@ void saveCalibration(const Calibration &cal) {
   for (int i = 0; i < ADC_CHANNEL_COUNT; i++) {
     char scaleKey[16];
     char offsetKey[16];
+    char pointsKey[16];
+    char rmsKey[16];
+    char maxKey[16];
     snprintf(scaleKey, sizeof(scaleKey), "cal_s%d", i);
     snprintf(offsetKey, sizeof(offsetKey), "cal_o%d", i);
+    snprintf(pointsKey, sizeof(pointsKey), "cal_pts%d", i);
+    snprintf(rmsKey, sizeof(rmsKey), "cal_rms%d", i);
+    snprintf(maxKey, sizeof(maxKey), "cal_mx%d", i);
     s_prefs.putFloat(scaleKey, cal.ch[i].scale);
     s_prefs.putFloat(offsetKey, cal.ch[i].offsetMv);
+    s_prefs.putUShort(pointsKey, cal.fit[i].points);
+    s_prefs.putFloat(rmsKey, cal.fit[i].rmsMv);
+    s_prefs.putFloat(maxKey, cal.fit[i].maxResidualMv);
   }
 }
 

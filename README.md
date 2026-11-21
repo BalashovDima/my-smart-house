@@ -73,20 +73,65 @@ VITE_DEVICE_URL=http://192.168.1.50 npm run dev
 ### Calibration
 
 Readings are stored per channel as `cellMv = scale * pinMv + offsetMv`. Until
-calibration is saved, the UI shows an uncalibrated banner.
+calibration is saved, the UI shows an uncalibrated banner. `pinMv` already
+includes the ESP32 eFuse ADC calibration, so the per-channel fit corrects the
+op-amp front end: its offset and its gain.
 
-Two-point procedure (per cell, ideally with a bench supply):
+The UI keeps a table of calibration points, one row per pack state, and fits
+each channel independently with least squares. Rows live in browser
+`localStorage`, so a multi-hour discharge can be captured across reloads.
 
-1. Apply a known voltage near the bottom of the cell range; record the "ADC pin
-   mV" and the actual cell voltage in mV. Use the `live` button to fill the raw
-   value.
-2. Repeat near the top of the range.
-3. Press **Compute scale & offset**, check the preview, then **Save
-   calibration**.
+1. With the pack at rest (no charger, no load, BMS not balancing), measure each
+   cell with a multimeter **across adjacent pins of the board's sense
+   connector** and type the value into the row. That is the voltage the front
+   end actually sees.
+2. Press **Capture all live** to snapshot the four `pinMv` values at once.
+   Repeat the read a few times if you want to confirm they are stable; they
+   update a few seconds apart.
+3. Put a load on the pack until each cell has dropped by at least 200 mV
+   (300–450 mV is better), remove the load, wait for rest, and capture another
+   row.
+4. Add more rows if you can. Three or more give a residual, which is the only
+   way to notice a nonlinear front end.
+5. Press **Fit all channels**, check the preview and the reported rms/max
+   residual, then **Save calibration**.
 
-Pick both points close to the cell's real operating voltage (for LiFePO4, e.g.
-3.2 V and 3.45 V), not spread across 0–4 V: the fit is an affine line and is
-only exact at the two points.
+Guidelines:
+
+- At least 60 mV of `pinMv` span is required; aim for several hundred.
+- rms and max residual under ~5 mV means the front end is linear over the
+  captured range. Above ~10 mV, one point is probably wrong or the stage is
+  compressing near a rail.
+- The four channels should end up with similar scales (within ~1%) and
+  independent offsets. An outlier points at the measurement, not at the ADC.
+- Verify on a voltage you did not fit with: calibrated cell values should agree
+  with the multimeter within ~10 mV, and their sum with the pack voltage within
+  ~20–30 mV at rest.
+
+`POST /api/calibration` accepts an optional per-channel `fit` object
+(`points`, `rmsMv`, `maxResidualMv`). The firmware stores it in NVS and returns
+it from `/api/status` so the quality survives a reload; it never fits anything
+itself.
+
+#### Bench cross-check with a single supply (optional)
+
+The pack discharge above is enough for a usable fit. This check only exists to
+catch a front-end problem when the pack-derived numbers look suspicious.
+
+Only channel 1 can be driven directly: its lower input is at board ground, while
+channels 2–4 sit on a stacked common mode that one earthed supply cannot
+reproduce.
+
+1. Disconnect the pack's sense harness from the board; no cell is connected.
+2. Power the board over USB. Set the supply to 3.00 V, current limit ~10 mA,
+   output off; connect + to the cell 1 sense tap and − to board GND.
+3. Enable the output, read `pinMv`; set 3.40 V, read again, and fit those two
+   points.
+4. Compare with the pack-derived channel 1 result: scale within ~1%, offset
+   within ~20 mV.
+5. Output off, disconnect the supply, and only then reconnect the pack.
+
+Never connect the supply in parallel with a connected cell.
 
 The pack/min/max/spread values are sums/differences of calibrated cell values,
 so they inherit any calibration error.
@@ -95,7 +140,7 @@ so they inherit any calibration error.
 
 - `GET /api/status` — Wi-Fi state, per-channel raw/pin/cell mV, pack/min/max/
   spread, calibration, sample age, ADC calibration source
-- `POST /api/calibration` — `{ "channels": [{ "scale": 1.02, "offsetMv": -12.5 }, ...] }`, persists to NVS
+- `POST /api/calibration` — `{ "channels": [{ "scale": 1.02, "offsetMv": -12.5, "fit": { "points": 4, "rmsMv": 1.1, "maxResidualMv": 2.3 } }, ...] }`, persists to NVS; `fit` is optional
 - `GET /api/wifi/scan` — network list (scan briefly interrupts the AP)
 - `POST /api/wifi` — `{ "ssid": "...", "password": "..." }`, persists and reboots
 - `POST /api/factory-reset` — clears NVS and reboots

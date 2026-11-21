@@ -41,6 +41,22 @@ bool calibrationChannelIsValid(const ChannelCalibration &ch) {
   return true;
 }
 
+bool calibrationFitIsValid(const ChannelFit &fit) {
+  if (!std::isfinite(fit.rmsMv) || !std::isfinite(fit.maxResidualMv)) {
+    return false;
+  }
+  if (fit.points > 64) {
+    return false;
+  }
+  if (fit.rmsMv < 0.0f || fit.rmsMv > 1000.0f) {
+    return false;
+  }
+  if (fit.maxResidualMv < 0.0f || fit.maxResidualMv > 1000.0f) {
+    return false;
+  }
+  return true;
+}
+
 int32_t calibrationToCellMv(const ChannelCalibration &ch, uint32_t pinMv) {
   const float cellMv = ch.scale * static_cast<float>(pinMv) + ch.offsetMv;
   if (!std::isfinite(cellMv) || cellMv < 0.0f) {

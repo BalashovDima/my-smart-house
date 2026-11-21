@@ -19,6 +19,7 @@ Each component is independent; there is no root workspace tooling.
 Commands, from `firmware/battery-monitor/`:
 
 - Build UI: `cd web && npm ci && npm run build` → writes `../data/` (gitignored)
+- Fit unit tests: `cd web && npm test` (node --test, no device needed)
 - Compile: `pio run`
 - Flash app / filesystem: `pio run -t upload`, `pio run -t uploadfs`
 - Filesystem image only: `pio run -t buildfs`
@@ -46,8 +47,12 @@ Constraints:
   The default 1.2 MB app slot is too small for Wi-Fi + `WebServer`.
 - The device uses the synchronous `WebServer`, not ESPAsyncWebServer. Keep HTTP
   handlers short; POST JSON is read from `arg("plain")`.
-- Calibration contract: `cellMv = scale * pinMv + offsetMv` per channel, fit
-  from two points. Changing the formula requires changing `web/src/app.jsx` too.
+- Calibration contract: `cellMv = scale * pinMv + offsetMv` per channel. The
+  fit (N-point least squares) lives in `web/src/fit.js`; the firmware only
+  stores the affine pair plus fit provenance (`ChannelFit`: points, rms, max
+  residual) and must keep `calibrationChannelIsValid()` bounds in sync with
+  `FIT_LIMITS` there. Changing the formula requires changing `web/src/app.jsx`
+  too.
 - `.gitattributes` enforces LF; don't add CRLF files.
 
 Safety: never route a cell or mains voltage directly into an ADC; the op-amp
