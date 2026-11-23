@@ -1128,9 +1128,10 @@ export function App() {
             <div>
               <h2 class="text-lg font-semibold">MQTT</h2>
               <p class="text-sm text-slate-400">
-                Publishes calibrated telemetry to the broker. TLS-only by
-                default; paste the CA certificate generated on the server. Save
-                applies without rebooting.
+                Publishes calibrated telemetry to the broker. TLS is the
+                default; plain MQTT exists for local development. Paste the CA
+                certificate generated on the server for TLS. Save applies
+                without rebooting.
               </p>
             </div>
             <div class="text-right text-xs text-slate-400">
@@ -1176,6 +1177,13 @@ export function App() {
           {wifi && !wifi.timeSynced && mqttForm.tls ? (
             <p class="mt-3 text-xs text-amber-300">
               The clock is not synchronized yet; TLS waits for NTP ({wifi.ntpServer}).
+            </p>
+          ) : null}
+          {!mqttForm.tls ? (
+            <p class="mt-3 rounded-lg border border-amber-600/50 bg-amber-500/10 p-3 text-xs text-amber-200">
+              Plain MQTT is unencrypted and does not check certificates. Use it
+              only on a trusted development network, and enable TLS before
+              deployment.
             </p>
           ) : null}
 
@@ -1266,7 +1274,9 @@ export function App() {
                   onChange={(event) => toggleMqttTls(event.currentTarget.checked)}
                   class="size-4 rounded border-slate-600 bg-slate-950"
                 />
-                <span class="text-slate-300">TLS</span>
+                <span class="text-slate-300">
+                  TLS <span class="text-slate-500">(off = plain, dev only)</span>
+                </span>
               </label>
             </div>
 

@@ -194,6 +194,23 @@ curl -s localhost:8080/api/devices | jq
 See [`server/README.md`](server/README.md) for the full runbook, API, retention,
 and local development instructions.
 
+#### Local development without TLS
+
+For a local broker, the device MQTT panel supports plain MQTT: uncheck **TLS**,
+use the plain port (1883 by default), and leave the CA blank. The firmware then
+uses `mqtt://` and performs no certificate checks. The server has a dev compose
+override with an anonymous plain listener:
+
+```sh
+cd server
+MQTT_PASS=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+Set the device broker host to the development machine's LAN address and port
+1883 (`MQTT_DEV_PORT` overrides the host port). This mode is unencrypted and
+unauthenticated — keep it on a trusted development network, and re-enable TLS
+with the CA before deployment. The production compose stack remains TLS-only.
+
 ### Safety
 
 The op-amp stages must provide isolation/attenuation for the pack; never connect

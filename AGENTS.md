@@ -66,6 +66,9 @@ Constraints:
   IP entered in the UI.
 - The device UI is plain HTTP, so MQTT credentials are exposed on the LAN
   during provisioning even though the broker link is TLS.
+- TLS is the default. Plain MQTT (TLS unchecked) is a dev-only path with no
+  encryption, certificate checks, or broker authentication; the dev compose
+  override is `docker-compose.dev.yml`. Re-enable TLS before deployment.
 
 ## Server
 
@@ -74,6 +77,8 @@ Commands, from `server/`:
 - `go test ./...`
 - `go run ./cmd/server` (needs `MQTT_URL`/`MQTT_CA_FILE`/`MQTT_PASS`)
 - `docker compose up -d --build` (mosquitto + server)
+- `MQTT_PASS=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml
+  up -d --build` (plain dev broker, no TLS)
 - `./deploy/gen-certs.sh --host <name> --ip <addr>` and
   `./deploy/gen-passwd.sh --device <id>` generate gitignored secrets
 

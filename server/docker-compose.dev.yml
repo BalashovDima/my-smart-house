@@ -1,0 +1,25 @@
+# Local development: plain MQTT on 1883, no TLS or certificates.
+#
+#   MQTT_PASS=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+#
+# Do not use this stack outside a trusted development network. The base
+# docker-compose.yml remains TLS-only.
+services:
+  mosquitto:
+    # Replace the production 8883 mapping so a dev stack does not need that
+    # host port to be free.
+    ports: !override
+      - "${MQTT_DEV_PORT:-1883}:1883"
+    volumes: !override
+      - ./deploy/mosquitto/mosquitto.dev.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+
+  server:
+    environment:
+      MQTT_URL: tcp://mosquitto:1883
+      MQTT_CA_FILE: ""
+      MQTT_TLS_SERVER_NAME: ""
+      MQTT_USER: ""
+      MQTT_PASS: ""
+    volumes: !override
+      - server-data:/data

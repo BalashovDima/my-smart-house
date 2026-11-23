@@ -100,3 +100,16 @@ their own `type`; they do not need a new topic or server migration.
 - The device configuration UI is plain HTTP on the LAN. MQTT credentials are
   visible to the LAN while they are being provisioned, even though MQTT itself
   is encrypted. Provision devices on a trusted network.
+
+## Local development
+
+TLS is the default and the production deployment keeps it. For local
+development, the device's TLS checkbox can be turned off: it then uses
+`mqtt://`, sends no CA, and performs no certificate checks. The server and
+`server/docker-compose.dev.yml` provide a plain anonymous listener for that
+case.
+
+Plain MQTT has no encryption and no authentication. Use it only on a trusted
+development network and turn TLS back on before deployment. The pinned ESP-IDF
+esp-tls build cannot skip certificate verification while keeping TLS, so
+"insecure TLS" is not an option; plain MQTT is the development path.

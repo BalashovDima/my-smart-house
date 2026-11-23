@@ -66,6 +66,41 @@ changed with `MQTT_PORT`/`HTTP_PORT` in `.env`. The broker has no plain
 listener. `deploy/certs/`, `deploy/mosquitto/passwd`, `.env`, and the SQLite
 volume are gitignored.
 
+## Plain MQTT for local development
+
+The production stack is TLS-only. For local development, an override runs a
+second mosquitto configuration with a plain, anonymous listener on 1883 and
+points the Go server at `tcp://mosquitto:1883`:
+
+```sh
+MQTT_PASS=dev MQTT_DEV_PORT=1883 \
+  docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+`MQTT_PASS=dev` only satisfies the base compose interpolation; the dev broker
+ignores authentication. Change `MQTT_DEV_PORT` if 1883 is already taken. In the
+device MQTT panel:
+
+| Field | Value |
+|---|---|
+| Broker host | the dev machine's LAN address |
+| Port | `1883`, or `MQTT_DEV_PORT` |
+| TLS | off (plain MQTT) |
+| CA certificate | leave blank |
+| Username/password | leave blank, or anything; the dev broker is anonymous |
+
+This listener is unencrypted and has no ACL or certificate checks. Never expose
+it outside a trusted development network. `docker compose ... down -v` removes
+the dev stack and its volumes; the production TLS listener is unaffected.
+
+The Go server also connects to a plain broker without the compose override:
+set `MQTT_URL=tcp://host:1883` and leave `MQTT_CA_FILE` empty.
+
+TLS-without-verification is not supported by the pinned ESP-IDF esp-tls build
+(`CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY` is disabled), so local development
+uses plain MQTT rather than "insecure TLS". Production keeps full TLS and CA
+verification.
+
 ## Device setup
 
 In the battery monitor UI's MQTT panel:
