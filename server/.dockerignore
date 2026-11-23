@@ -1,0 +1,6 @@
+.git
+data
+deploy/certs
+deploy/mosquitto/passwd
+.env
+*.db

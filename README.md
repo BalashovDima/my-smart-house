@@ -10,7 +10,8 @@ local configuration + calibration UI from LittleFS.
 ## Layout
 
 - `firmware/battery-monitor/` — PlatformIO project (ESP32)
-- `server/` — Go backend (not started yet)
+- `server/` — Go backend: mosquitto subscriber + SQLite + HTTP/JSON API
+- `docs/mqtt.md` — shared topics, payload schema, and TLS/ACL contract
 - `frontend/` — React + Vite dashboard (not started yet)
 
 The device UI is intentionally separate from `frontend/`: it is a Preact app
@@ -138,15 +139,60 @@ so they inherit any calibration error.
 
 ### HTTP API
 
-- `GET /api/status` — Wi-Fi state, per-channel raw/pin/cell mV, pack/min/max/
-  spread, calibration, sample age, ADC calibration source
+- `GET /api/status` — Wi-Fi state, NTP/time sync, MQTT status, per-channel
+  raw/pin/cell mV, pack/min/max/spread, calibration, sample age, ADC calibration
+  source
 - `POST /api/calibration` — `{ "channels": [{ "scale": 1.02, "offsetMv": -12.5, "fit": { "points": 4, "rmsMv": 1.1, "maxResidualMv": 2.3 } }, ...] }`, persists to NVS; `fit` is optional
 - `GET /api/wifi/scan` — network list (scan briefly interrupts the AP)
 - `POST /api/wifi` — `{ "ssid": "...", "password": "..." }`, persists and reboots
+- `POST /api/mqtt` — broker/TLS/NTP settings; see below, applies without reboot
 - `POST /api/factory-reset` — clears NVS and reboots
 
 No authentication: keep the device on a trusted LAN. Calibration has no
 unauthenticated read-back of anything sensitive, but a factory reset is one POST.
+
+The device UI itself is HTTP. MQTT credentials and the CA PEM are therefore
+visible on the LAN while they are provisioned, even though the broker link is
+TLS. Provision on a trusted network.
+
+### MQTT telemetry
+
+The device publishes to the mosquitto broker using the contract in
+[`docs/mqtt.md`](docs/mqtt.md). Defaults: TLS on port 8883, prefix
+`smarthouse`, one telemetry burst every 30 s published to a retained `state`
+topic and a non-retained `sample` topic, plus retained availability and an LWT
+`offline`.
+
+Configure it in the device UI's **MQTT** panel:
+
+| Field | Value |
+|---|---|
+| Broker host | the name or IP in the server certificate SAN |
+| Port | `8883` |
+| TLS | on |
+| Username | device id, e.g. `battmon-A1B2` |
+| Password | per-device password from the broker setup |
+| CA certificate | paste `server/deploy/certs/ca.crt` |
+| NTP server | `pool.ntp.org`, or a local NTP server |
+
+TLS needs a valid clock. The firmware starts SNTP after the Wi-Fi link comes up
+and waits for it before connecting; `/api/status` reports `wifi.timeSynced` and
+`mqtt.lastError`. The server certificate must cover the host or IP entered in
+the UI, and it must be issued by the CA you pasted.
+
+Run the broker and Go backend from `server/`:
+
+```sh
+cd server
+./deploy/gen-certs.sh --host mqtt.home.arpa --ip 192.168.1.10
+./deploy/gen-passwd.sh --device battmon-A1B2
+cp .env.example .env      # set MQTT_PASS
+docker compose up -d --build
+curl -s localhost:8080/api/devices | jq
+```
+
+See [`server/README.md`](server/README.md) for the full runbook, API, retention,
+and local development instructions.
 
 ### Safety
 
@@ -160,3 +206,8 @@ network and common ground before powering the board.
 - Corrupt LittleFS → erase flash (`pio run -t erase`) and reflash both app and FS.
 - Wrong/stale UI → static responses are `Cache-Control: no-cache`; hard-refresh
   the browser after reflashing.
+- MQTT stuck at `waiting for NTP time sync` → the LAN cannot reach the NTP
+  server; point the field at a local one.
+- MQTT `TLS certificate verification failed` or `TLS/TCP error` → the host/IP in
+  the MQTT panel is not in the server certificate SAN, the pasted CA is wrong,
+  or the broker port/protocol does not match.

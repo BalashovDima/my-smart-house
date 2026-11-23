@@ -436,6 +436,20 @@ export function App() {
   const [fitErrors, setFitErrors] = useState(() => Array(CHANNEL_COUNT).fill(''));
   const [savingCal, setSavingCal] = useState(false);
   const [wifiForm, setWifiForm] = useState({ ssid: '', password: '' });
+  const [mqttForm, setMqttForm] = useState({
+    host: '',
+    port: '8883',
+    tls: true,
+    username: '',
+    password: '',
+    prefix: 'smarthouse',
+    intervalSec: '30',
+    ntpServer: 'pool.ntp.org',
+    caPem: '',
+    clearPassword: false,
+    clearCa: false,
+  });
+  const [savingMqtt, setSavingMqtt] = useState(false);
   const [networks, setNetworks] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -478,6 +492,18 @@ export function App() {
     if (status.wifi.staConnected) {
       setWifiForm((form) => ({ ...form, ssid: status.wifi.ssid }));
     }
+    if (status.mqtt) {
+      setMqttForm((form) => ({
+        ...form,
+        host: status.mqtt.host || '',
+        port: String(status.mqtt.port || 8883),
+        tls: status.mqtt.tls !== false,
+        username: status.mqtt.username || status.mqtt.deviceId || '',
+        prefix: status.mqtt.prefix || 'smarthouse',
+        intervalSec: String(status.mqtt.intervalSec || 30),
+        ntpServer: status.wifi.ntpServer || 'pool.ntp.org',
+      }));
+    }
   }, [status]);
 
   useEffect(() => {
@@ -496,6 +522,19 @@ export function App() {
 
   const updateCal = (index, patch) => {
     setCal((prev) => prev.map((value, i) => (i === index ? { ...value, ...patch } : value)));
+  };
+
+  const updateMqtt = (patch) => {
+    setMqttForm((form) => ({ ...form, ...patch }));
+  };
+
+  const toggleMqttTls = (tls) => {
+    setMqttForm((form) => ({
+      ...form,
+      tls,
+      port:
+        form.port === (tls ? '1883' : '8883') ? (tls ? '8883' : '1883') : form.port,
+    }));
   };
 
   const setCalError = (index, message) => {
@@ -693,6 +732,81 @@ export function App() {
     }
   };
 
+  const saveMqtt = async (event) => {
+    event.preventDefault();
+    const host = mqttForm.host.trim();
+    const port = Number(mqttForm.port);
+    const intervalSec = Number(mqttForm.intervalSec);
+    const prefix = mqttForm.prefix.trim();
+    const username = mqttForm.username.trim();
+    const caPem = mqttForm.caPem.trim();
+
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setError('MQTT port must be an integer from 1 to 65535.');
+      return;
+    }
+    if (!Number.isInteger(intervalSec) || intervalSec < 5 || intervalSec > 3600) {
+      setError('MQTT interval must be 5-3600 seconds.');
+      return;
+    }
+    if (!/^[A-Za-z0-9._-]{1,64}$/.test(prefix)) {
+      setError('MQTT prefix must be 1-64 letters, digits, ".", "_" or "-".');
+      return;
+    }
+    if (username.length > 128) {
+      setError('MQTT username is too long.');
+      return;
+    }
+    if (mqttForm.tls && mqttForm.clearCa) {
+      setError('TLS needs a CA certificate; disable TLS or keep the stored CA.');
+      return;
+    }
+    if (
+      mqttForm.tls &&
+      !caPem &&
+      !status?.mqtt?.caConfigured
+    ) {
+      setError('Paste the broker CA certificate to use TLS.');
+      return;
+    }
+
+    setSavingMqtt(true);
+    setError('');
+    setNotice('');
+    try {
+      await postJson('/api/mqtt', {
+        host,
+        port,
+        tls: mqttForm.tls,
+        username,
+        password: mqttForm.password,
+        prefix,
+        intervalSec,
+        ntpServer: mqttForm.ntpServer.trim(),
+        caPem,
+        clearPassword: mqttForm.clearPassword,
+        clearCa: mqttForm.clearCa,
+      });
+      setMqttForm((form) => ({
+        ...form,
+        password: '',
+        caPem: '',
+        clearPassword: false,
+        clearCa: false,
+      }));
+      setNotice(
+        host
+          ? 'MQTT settings saved; reconnecting in the background.'
+          : 'MQTT disabled.',
+      );
+      await refreshStatus();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingMqtt(false);
+    }
+  };
+
   const factoryReset = async () => {
     if (!window.confirm('Erase Wi-Fi credentials and calibration, then reboot?')) {
       return;
@@ -729,6 +843,7 @@ export function App() {
   }
 
   const wifi = status?.wifi;
+  const mqttStatus = status?.mqtt;
   const stale = status ? status.lastSampleAgeMs > 5000 : false;
   const hasSample = Boolean(status && status.lastSampleSeq > 0);
   const livePins = status?.channels?.map((channel) => channel.pinMv) ?? [];
@@ -751,6 +866,19 @@ export function App() {
             ) : (
               <Pill tone="rose">offline</Pill>
             )}
+            {mqttStatus ? (
+              <Pill
+                tone={
+                  mqttStatus.connected
+                    ? 'green'
+                    : mqttStatus.enabled
+                      ? 'amber'
+                      : 'slate'
+                }
+              >
+                mqtt {mqttStatus.connected ? 'on' : mqttStatus.enabled ? 'wait' : 'off'}
+              </Pill>
+            ) : null}
             {status ? (
               <>
                 <Pill>v{status.version}</Pill>
@@ -995,11 +1123,223 @@ export function App() {
           </div>
         </section>
 
+        <section class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 class="text-lg font-semibold">MQTT</h2>
+              <p class="text-sm text-slate-400">
+                Publishes calibrated telemetry to the broker. TLS-only by
+                default; paste the CA certificate generated on the server. Save
+                applies without rebooting.
+              </p>
+            </div>
+            <div class="text-right text-xs text-slate-400">
+              {mqttStatus ? (
+                <>
+                  <p>
+                    {mqttStatus.connected
+                      ? 'connected'
+                      : mqttStatus.enabled
+                        ? 'waiting'
+                        : 'disabled'}
+                    {mqttStatus.lastPublishAgeMs >= 0
+                      ? ` · last publish ${(mqttStatus.lastPublishAgeMs / 1000).toFixed(0)} s ago`
+                      : ''}
+                  </p>
+                  {mqttStatus.deviceId ? (
+                    <p>
+                      device <span class="text-slate-200">{mqttStatus.deviceId}</span>
+                    </p>
+                  ) : null}
+                  {mqttStatus.stateTopic ? (
+                    <p class="break-all text-slate-500">{mqttStatus.stateTopic}</p>
+                  ) : null}
+                  {mqttStatus.sampleTopic ? (
+                    <p class="break-all text-slate-500">{mqttStatus.sampleTopic}</p>
+                  ) : null}
+                  {mqttStatus.lastError ? (
+                    <p class="text-rose-300">{mqttStatus.lastError}</p>
+                  ) : null}
+                </>
+              ) : (
+                <p>not available</p>
+              )}
+            </div>
+          </div>
+
+          {wifi && !wifi.staConnected ? (
+            <p class="mt-3 text-xs text-amber-300">
+              MQTT needs the device on your network (STA mode). Connect Wi-Fi
+              first.
+            </p>
+          ) : null}
+          {wifi && !wifi.timeSynced && mqttForm.tls ? (
+            <p class="mt-3 text-xs text-amber-300">
+              The clock is not synchronized yet; TLS waits for NTP ({wifi.ntpServer}).
+            </p>
+          ) : null}
+
+          <form class="mt-4 space-y-4" onSubmit={saveMqtt}>
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label class="block text-sm">
+                <span class="mb-1 block text-slate-400">Broker host</span>
+                <input
+                  value={mqttForm.host}
+                  onInput={(event) => updateMqtt({ host: event.currentTarget.value })}
+                  autocomplete="off"
+                  placeholder="clear to disable"
+                  class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none"
+                />
+              </label>
+              <label class="block text-sm">
+                <span class="mb-1 block text-slate-400">Port</span>
+                <input
+                  value={mqttForm.port}
+                  onInput={(event) => updateMqtt({ port: event.currentTarget.value })}
+                  inputmode="numeric"
+                  class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none"
+                />
+              </label>
+              <label class="block text-sm">
+                <span class="mb-1 block text-slate-400">Topic prefix</span>
+                <input
+                  value={mqttForm.prefix}
+                  onInput={(event) => updateMqtt({ prefix: event.currentTarget.value })}
+                  autocomplete="off"
+                  class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none"
+                />
+              </label>
+              <label class="block text-sm">
+                <span class="mb-1 block text-slate-400">Interval (s)</span>
+                <input
+                  value={mqttForm.intervalSec}
+                  onInput={(event) =>
+                    updateMqtt({ intervalSec: event.currentTarget.value })
+                  }
+                  inputmode="numeric"
+                  class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none"
+                />
+              </label>
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label class="block text-sm">
+                <span class="mb-1 block text-slate-400">Username</span>
+                <input
+                  value={mqttForm.username}
+                  onInput={(event) =>
+                    updateMqtt({ username: event.currentTarget.value })
+                  }
+                  autocomplete="off"
+                  placeholder={mqttStatus?.deviceId || 'device id'}
+                  class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none"
+                />
+              </label>
+              <label class="block text-sm">
+                <span class="mb-1 block text-slate-400">Password</span>
+                <input
+                  type="password"
+                  value={mqttForm.password}
+                  onInput={(event) =>
+                    updateMqtt({ password: event.currentTarget.value })
+                  }
+                  autocomplete="new-password"
+                  placeholder="blank = keep current"
+                  class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none"
+                />
+              </label>
+              <label class="block text-sm">
+                <span class="mb-1 block text-slate-400">NTP server</span>
+                <input
+                  value={mqttForm.ntpServer}
+                  onInput={(event) =>
+                    updateMqtt({ ntpServer: event.currentTarget.value })
+                  }
+                  autocomplete="off"
+                  class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 focus:border-sky-500 focus:outline-none"
+                />
+              </label>
+              <label class="flex items-center gap-2 self-end text-sm lg:pb-2">
+                <input
+                  type="checkbox"
+                  checked={mqttForm.tls}
+                  onChange={(event) => toggleMqttTls(event.currentTarget.checked)}
+                  class="size-4 rounded border-slate-600 bg-slate-950"
+                />
+                <span class="text-slate-300">TLS</span>
+              </label>
+            </div>
+
+            <label class="block text-sm">
+              <span class="mb-1 flex flex-wrap items-center justify-between gap-2 text-slate-400">
+                <span>CA certificate (PEM)</span>
+                <span class={mqttStatus?.caConfigured ? 'text-emerald-300' : 'text-amber-300'}>
+                  {mqttStatus?.caConfigured
+                    ? 'stored'
+                    : mqttForm.tls
+                      ? 'required for TLS'
+                      : 'TLS off'}
+                </span>
+              </span>
+              <textarea
+                value={mqttForm.caPem}
+                onInput={(event) =>
+                  updateMqtt({ caPem: event.currentTarget.value, clearCa: false })
+                }
+                rows={5}
+                autocomplete="off"
+                placeholder={
+                  mqttStatus?.caConfigured
+                    ? 'Leave blank to keep the stored CA'
+                    : '-----BEGIN CERTIFICATE-----'
+                }
+                class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs focus:border-sky-500 focus:outline-none"
+              />
+            </label>
+
+            <div class="flex flex-wrap items-center gap-4">
+              <button
+                type="submit"
+                disabled={savingMqtt}
+                class="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              >
+                {savingMqtt ? 'Saving…' : 'Save MQTT'}
+              </button>
+              {mqttStatus?.passwordConfigured ? (
+                <label class="flex items-center gap-2 text-xs text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={mqttForm.clearPassword}
+                    onChange={(event) =>
+                      updateMqtt({ clearPassword: event.currentTarget.checked })
+                    }
+                    class="size-4 rounded border-slate-600 bg-slate-950"
+                  />
+                  clear stored password
+                </label>
+              ) : null}
+              {mqttStatus?.caConfigured ? (
+                <label class="flex items-center gap-2 text-xs text-slate-400">
+                  <input
+                    type="checkbox"
+                    checked={mqttForm.clearCa}
+                    onChange={(event) =>
+                      updateMqtt({ clearCa: event.currentTarget.checked })
+                    }
+                    class="size-4 rounded border-slate-600 bg-slate-950"
+                  />
+                  clear stored CA
+                </label>
+              ) : null}
+            </div>
+          </form>
+        </section>
+
         <footer class="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-4 text-xs text-slate-500">
           <span>
             REST: <code>GET /api/status</code>, <code>POST /api/calibration</code>,{' '}
             <code>GET /api/wifi/scan</code>, <code>POST /api/wifi</code>,{' '}
-            <code>POST /api/factory-reset</code>
+            <code>POST /api/mqtt</code>, <code>POST /api/factory-reset</code>
           </span>
           <span>ADC {status ? status.channels.map((c) => c.gpio).join('/') : '32/33/34/35'}</span>
         </footer>

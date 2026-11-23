@@ -10,6 +10,7 @@
 #include "adc.h"
 #include "calibration.h"
 #include "config.h"
+#include "mqtt_publisher.h"
 #include "settings.h"
 #include "wifi_manager.h"
 
@@ -64,6 +65,29 @@ void handleStatus() {
   wifi["apSsid"] = wifi_manager::apSsid();
   wifi["apIp"] = wifi_manager::apIpAddress();
   wifi["hostname"] = wifi_manager::hostname();
+  wifi["ntpServer"] = wifi_manager::ntpServer();
+  wifi["timeSynced"] = wifi_manager::timeSynced();
+
+  const mqtt::Status mqttStatus = mqtt::status();
+  JsonObject mqtt = doc["mqtt"].to<JsonObject>();
+  mqtt["enabled"] = mqttStatus.enabled;
+  mqtt["connected"] = mqttStatus.connected;
+  mqtt["host"] = mqttStatus.host;
+  mqtt["port"] = mqttStatus.port;
+  mqtt["tls"] = mqttStatus.tls;
+  mqtt["username"] = mqttStatus.username;
+  mqtt["prefix"] = mqttStatus.prefix;
+  mqtt["deviceId"] = mqttStatus.deviceId;
+  mqtt["stateTopic"] = mqttStatus.stateTopic;
+  mqtt["sampleTopic"] = mqttStatus.sampleTopic;
+  mqtt["availabilityTopic"] = mqttStatus.availabilityTopic;
+  mqtt["intervalSec"] = mqttStatus.intervalSec;
+  mqtt["passwordConfigured"] = mqttStatus.passwordConfigured;
+  mqtt["caConfigured"] = mqttStatus.caConfigured;
+  mqtt["lastPublishAgeMs"] = mqttStatus.lastPublishAgeMs;
+  if (!mqttStatus.lastError.isEmpty()) {
+    mqtt["lastError"] = mqttStatus.lastError;
+  }
 
   JsonArray channels = doc["channels"].to<JsonArray>();
   int32_t packMv = 0;
@@ -161,6 +185,7 @@ void handleCalibration() {
   next.calibrated = true;
 
   settings::saveCalibration(next);
+  mqtt::requestPublish();
 
   JsonDocument res;
   res["ok"] = true;
@@ -238,6 +263,165 @@ void handleFactoryReset() {
   wifi_manager::requestReboot(800);
 }
 
+bool isSafeHost(const String &value) {
+  if (value.isEmpty() || value.length() > 128) return false;
+  for (size_t i = 0; i < value.length(); i++) {
+    const char c = value[i];
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+                    c == '_';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+bool isSafeUsername(const String &value) {
+  if (value.length() > 128) return false;
+  for (size_t i = 0; i < value.length(); i++) {
+    const unsigned char c = static_cast<unsigned char>(value[i]);
+    if (c < 0x20 || c == 0x7f) return false;
+  }
+  return true;
+}
+
+// Prefix must stay one MQTT path segment so the bundled ACL patterns
+// (smarthouse/%u/state) keep working.
+bool isSafePrefix(const String &value) {
+  if (value.isEmpty() || value.length() > 64) return false;
+  for (size_t i = 0; i < value.length(); i++) {
+    const char c = value[i];
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+                    c == '-';
+    if (!ok) return false;
+  }
+  return true;
+}
+
+bool looksLikePemCertificate(const String &value) {
+  return value.indexOf("-----BEGIN CERTIFICATE-----") >= 0 &&
+         value.indexOf("-----END CERTIFICATE-----") >= 0;
+}
+
+void handleMqtt() {
+  if (!s_server.hasArg("plain")) {
+    sendError(400, "missing JSON body");
+    return;
+  }
+
+  JsonDocument doc;
+  const DeserializationError err = deserializeJson(doc, s_server.arg("plain"));
+  if (err) {
+    sendError(400, "invalid JSON");
+    return;
+  }
+
+  MqttSettings next = settings::loadMqtt();
+
+  String host = doc["host"] | next.host;
+  host.trim();
+  if (!host.isEmpty() && !isSafeHost(host)) {
+    sendError(400, "host must be a hostname or IPv4 address");
+    return;
+  }
+
+  const int32_t port = doc["port"] | static_cast<int32_t>(next.port);
+  if (port < 1 || port > 65535) {
+    sendError(400, "port must be 1-65535");
+    return;
+  }
+
+  const int32_t intervalSec =
+      doc["intervalSec"] | static_cast<int32_t>(next.intervalSec);
+  if (intervalSec < 5 || intervalSec > 3600) {
+    sendError(400, "interval must be 5-3600 seconds");
+    return;
+  }
+
+  String prefix = doc["prefix"] | next.prefix;
+  prefix.trim();
+  if (!isSafePrefix(prefix)) {
+    sendError(400, "prefix must be 1-64 letters, digits, '.', '_' or '-'");
+    return;
+  }
+
+  String username = doc["username"] | next.username;
+  username.trim();
+  if (!isSafeUsername(username)) {
+    sendError(400, "invalid username");
+    return;
+  }
+
+  next.host = host;
+  next.port = static_cast<uint16_t>(port);
+  next.tls = doc["tls"] | next.tls;
+  next.prefix = prefix;
+  next.intervalSec = static_cast<uint16_t>(intervalSec);
+  next.username = username;
+
+  if (doc["clearPassword"] | false) {
+    next.password = "";
+  } else {
+    JsonVariant passwordVar = doc["password"];
+    if (!passwordVar.isNull()) {
+      String password = passwordVar | "";
+      if (!password.isEmpty()) {
+        if (!isSafeUsername(password)) {
+          sendError(400, "invalid password");
+          return;
+        }
+        next.password = password;
+      }
+    }
+  }
+
+  if (doc["clearCa"] | false) {
+    next.caPem = "";
+  } else {
+    JsonVariant caVar = doc["caPem"];
+    if (!caVar.isNull()) {
+      String caPem = caVar | "";
+      caPem.trim();
+      if (!caPem.isEmpty()) {
+        if (caPem.length() < 100 || caPem.length() > 3500 ||
+            !looksLikePemCertificate(caPem)) {
+          sendError(400, "CA must be a PEM certificate under 3500 bytes");
+          return;
+        }
+        next.caPem = caPem;
+      }
+    }
+  }
+
+  if (!next.host.isEmpty() && next.tls && next.caPem.isEmpty()) {
+    sendError(400, "TLS requires a CA certificate");
+    return;
+  }
+
+  JsonVariant ntpVar = doc["ntpServer"];
+  if (!ntpVar.isNull()) {
+    String ntpServer = ntpVar | "";
+    ntpServer.trim();
+    if (ntpServer.isEmpty()) {
+      ntpServer = "pool.ntp.org";
+    }
+    if (!isSafeHost(ntpServer)) {
+      sendError(400, "invalid NTP server");
+      return;
+    }
+    settings::saveNtpServer(ntpServer);
+    wifi_manager::applyNtpServer();
+  }
+
+  settings::saveMqtt(next);
+  mqtt::requestReload();
+  mqtt::requestPublish();
+
+  JsonDocument res;
+  res["ok"] = true;
+  sendJson(200, res);
+}
+
 void handleStatic() {
   if (s_server.method() != HTTP_GET) {
     sendError(404, "not found");
@@ -281,6 +465,7 @@ void webBegin() {
   s_server.on("/api/calibration", HTTP_POST, handleCalibration);
   s_server.on("/api/wifi/scan", HTTP_GET, handleScan);
   s_server.on("/api/wifi", HTTP_POST, handleWifi);
+  s_server.on("/api/mqtt", HTTP_POST, handleMqtt);
   s_server.on("/api/factory-reset", HTTP_POST, handleFactoryReset);
   s_server.onNotFound(handleStatic);
   s_server.begin();

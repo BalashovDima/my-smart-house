@@ -3,6 +3,8 @@
 #include <ESPmDNS.h>
 #include <WiFi.h>
 
+#include <time.h>
+
 #include "config.h"
 #include "settings.h"
 
@@ -17,16 +19,22 @@ enum State : uint8_t {
 
 constexpr uint32_t CONNECT_TIMEOUT_MS = 15000;
 constexpr uint32_t RETRY_INTERVAL_MS = 20000;
+constexpr uint32_t NTP_RETRY_INTERVAL_MS = 15000;
+// Anything before late 2023 means SNTP has not set the clock yet.
+constexpr time_t MIN_VALID_EPOCH = 1700000000;
 
 State s_state = STATE_AP_ONLY;
 String s_ssid;
 String s_pass;
 String s_apSsid;
 String s_hostname;
+String s_ntpServer;
 uint32_t s_deadline = 0;
 uint32_t s_nextRetry = 0;
 uint32_t s_rebootAt = 0;
+uint32_t s_lastNtpAttempt = 0;
 bool s_mdnsStarted = false;
+bool s_ntpStarted = false;
 
 String chipSuffix() {
   char buf[5];
@@ -55,6 +63,15 @@ void restartMdns() {
   startMdns();
 }
 
+void startSntp() {
+  s_ntpServer = settings::loadNtpServer();
+  Serial.printf("wifi: SNTP via %s\n", s_ntpServer.c_str());
+  configTime(0, 0, s_ntpServer.c_str(), s_ntpServer.c_str(),
+             s_ntpServer.c_str());
+  s_ntpStarted = true;
+  s_lastNtpAttempt = millis();
+}
+
 void startSoftAp() {
   if (AP_PASSWORD[0] != '\0') {
     WiFi.softAP(s_apSsid.c_str(), AP_PASSWORD);
@@ -71,6 +88,9 @@ void onStaConnected() {
   }
   s_state = STATE_STA_CONNECTED;
   restartMdns();
+  if (!s_ntpStarted) {
+    startSntp();
+  }
   Serial.printf("wifi: connected to %s, ip %s\n", s_ssid.c_str(),
                 WiFi.localIP().toString().c_str());
 }
@@ -133,6 +153,10 @@ void loop() {
     case STATE_STA_CONNECTED:
       if (WiFi.status() != WL_CONNECTED) {
         enterApStaRetry();
+      } else if (!timeSynced() &&
+                 static_cast<int32_t>(millis() - s_lastNtpAttempt) >=
+                     static_cast<int32_t>(NTP_RETRY_INTERVAL_MS)) {
+        startSntp();
       }
       break;
 
@@ -184,6 +208,23 @@ String apSsid() { return apActive() ? s_apSsid : String(); }
 int32_t rssi() { return staConnected() ? WiFi.RSSI() : 0; }
 
 String hostname() { return s_hostname; }
+
+bool timeSynced() { return time(nullptr) >= MIN_VALID_EPOCH; }
+
+String ntpServer() {
+  if (s_ntpServer.isEmpty()) {
+    s_ntpServer = settings::loadNtpServer();
+  }
+  return s_ntpServer;
+}
+
+void applyNtpServer() {
+  s_ntpStarted = false;
+  s_ntpServer = settings::loadNtpServer();
+  if (staConnected()) {
+    startSntp();
+  }
+}
 
 void requestReboot(uint32_t delayMs) { s_rebootAt = millis() + delayMs; }
 

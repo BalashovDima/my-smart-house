@@ -1,0 +1,13 @@
+# The Go server reads every device and can send commands.
+user smarthouse-server
+topic read smarthouse/+/state
+topic read smarthouse/+/sample
+topic read smarthouse/+/availability
+topic write smarthouse/+/cmd
+
+# Each device authenticates with a username equal to its device id, and may
+# only publish its own state/sample/availability and read its own command topic.
+pattern write smarthouse/%u/state
+pattern write smarthouse/%u/sample
+pattern write smarthouse/%u/availability
+pattern read smarthouse/%u/cmd

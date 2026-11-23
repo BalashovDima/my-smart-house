@@ -3,6 +3,7 @@
 
 #include "adc.h"
 #include "config.h"
+#include "mqtt_publisher.h"
 #include "settings.h"
 #include "web_server.h"
 #include "wifi_manager.h"
@@ -19,11 +20,13 @@ void setup() {
   settings::begin();
   adcBegin();
   wifi_manager::begin();
+  mqtt::begin();
   webBegin();
 }
 
 void loop() {
   wifi_manager::loop();
+  mqtt::loop();
   webLoop();
   delay(2);
 }

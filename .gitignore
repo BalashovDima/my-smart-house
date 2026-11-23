@@ -9,6 +9,16 @@ firmware/*/data/
 **/node_modules/
 **/dist/
 
+# Server: generated certificates, broker password file, local env, SQLite data
+server/deploy/certs/
+server/deploy/mosquitto/passwd
+server/.env
+server/data/
+server/server
+**/*.db
+**/*.db-shm
+**/*.db-wal
+
 # Editor / OS noise
 .vscode/
 .DS_Store

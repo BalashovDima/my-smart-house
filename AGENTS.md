@@ -7,7 +7,8 @@ temperature, humidity, pressure, mains voltage and power consumption.
 
 - `firmware/battery-monitor/` — ESP32 PlatformIO project (first device)
 - `firmware/` — future ESP32/ESP8266 projects, one PlatformIO project each
-- `server/` — Go backend: MQTT subscriber + HTTP/JSON API (not started)
+- `server/` — Go backend: mosquitto subscriber + SQLite + HTTP/JSON API
+- `docs/mqtt.md` — shared MQTT topics, payload schema, and TLS/ACL contract
 - `frontend/` — React + Vite dashboard (not started)
 - `firmware/battery-monitor/web/` — Preact UI compiled into LittleFS, **not** the
   `frontend/` dashboard
@@ -54,13 +55,36 @@ Constraints:
   `FIT_LIMITS` there. Changing the formula requires changing `web/src/app.jsx`
   too.
 - `.gitattributes` enforces LF; don't add CRLF files.
+- MQTT telemetry follows `docs/mqtt.md`; firmware and server must change in the
+  same commit. Topics are `<prefix>/<id>/state` (retained latest),
+  `<prefix>/<id>/sample` (non-retained history), and
+  `<prefix>/<id>/availability`; all QoS 1, availability LWT `offline`.
+- MQTT settings (broker, TLS, credentials, CA PEM, prefix, interval) live in
+  NVS and are edited from the device UI at `POST /api/mqtt`; the device id is
+  the mDNS host name (`battmon-XXXX`). TLS is the default and the device must
+  have SNTP time before connecting; the server cert SAN must match the host or
+  IP entered in the UI.
+- The device UI is plain HTTP, so MQTT credentials are exposed on the LAN
+  during provisioning even though the broker link is TLS.
+
+## Server
+
+Commands, from `server/`:
+
+- `go test ./...`
+- `go run ./cmd/server` (needs `MQTT_URL`/`MQTT_CA_FILE`/`MQTT_PASS`)
+- `docker compose up -d --build` (mosquitto + server)
+- `./deploy/gen-certs.sh --host <name> --ip <addr>` and
+  `./deploy/gen-passwd.sh --device <id>` generate gitignored secrets
+
+SQLite is the store; raw history defaults to 180 days. The broker is TLS-only
+on 8883 and uses the ACL in `server/deploy/mosquitto/acl` (device username =
+device id). See `server/README.md` for the full runbook.
 
 Safety: never route a cell or mains voltage directly into an ADC; the op-amp
 stages are assumed to provide attenuation/isolation.
 
 ## Still to decide
 
-- MQTT topic/payload schema shared by firmware and the future server; change
-  both in the same commit.
 - Shared ESP8266/ESP32 code: guard chip-specific APIs with `#ifdef ESP32` /
   `#ifdef ESP8266`. ESP8266 has a single ADC (`A0`, 0–1.0 V raw).

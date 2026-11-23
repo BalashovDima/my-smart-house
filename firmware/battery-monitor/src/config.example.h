@@ -34,3 +34,7 @@ static constexpr int ADC_SAMPLES_PER_READ = 48;
 static constexpr int ADC_BLOCK_SIZE = 8;
 
 #define NVS_NAMESPACE "battmon"
+
+// MQTT broker address, TLS materials, credentials, topic prefix, and publish
+// interval are provisioned from the device UI and stored in NVS. Defaults:
+// TLS on, port 8883, prefix "smarthouse", 30 s interval, NTP pool.ntp.org.
