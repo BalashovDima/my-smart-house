@@ -8,8 +8,8 @@ temperature, humidity, pressure, mains voltage and power consumption.
 - `firmware/battery-monitor/` — ESP32 PlatformIO project (first device)
 - `firmware/` — future ESP32/ESP8266 projects, one PlatformIO project each
 - `server/` — Go backend: mosquitto subscriber + SQLite + HTTP/JSON API
+- `frontend/` — React + Vite dashboard for the server API
 - `docs/mqtt.md` — shared MQTT topics, payload schema, and TLS/ACL contract
-- `frontend/` — React + Vite dashboard (not started)
 - `firmware/battery-monitor/web/` — Preact UI compiled into LittleFS, **not** the
   `frontend/` dashboard
 
@@ -83,6 +83,31 @@ device id). See `server/README.md` for the full runbook.
 
 Safety: never route a cell or mains voltage directly into an ADC; the op-amp
 stages are assumed to provide attenuation/isolation.
+
+## Frontend
+
+Commands, from `frontend/`:
+
+- `npm ci`
+- `npm run dev` — Vite on `:5173`, proxies `/api` to `http://localhost:8080`
+  (`VITE_API_PROXY` overrides the target)
+- `npm test` — Vitest unit tests for ranges, formatting, and payload mapping
+- `npm run typecheck`, `npm run build` (static `dist/`)
+
+Stack: React 19 + TypeScript, Vite, Tailwind v4, uPlot. It is a read-only
+dashboard over the server API, not the device UI.
+
+Constraints:
+
+- No authentication: keep it (and port 8080) on the trusted LAN.
+- Device types are registered in `src/devices/index.tsx`. `battery-monitor` has
+  the detailed card/charts; unknown types get the generic card and raw history
+  list. Add a renderer there for new charted device types.
+- History ranges map to fixed server-side bucket sizes in `src/lib/ranges.ts`;
+  keep the point count well under the API's 10000-sample limit.
+- Cell-bar scale (2.5–3.65 V) and spread thresholds (30/80 mV) are display
+  heuristics in `CellBars.tsx` / `battery.tsx`, not state-of-charge estimates.
+- The Go server does not serve `dist/`; use `npm run dev` or `vite preview`.
 
 ## Still to decide
 

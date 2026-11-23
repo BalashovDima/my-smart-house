@@ -11,8 +11,8 @@ local configuration + calibration UI from LittleFS.
 
 - `firmware/battery-monitor/` — PlatformIO project (ESP32)
 - `server/` — Go backend: mosquitto subscriber + SQLite + HTTP/JSON API
+- `frontend/` — React + Vite dashboard for the server API
 - `docs/mqtt.md` — shared topics, payload schema, and TLS/ACL contract
-- `frontend/` — React + Vite dashboard (not started yet)
 
 The device UI is intentionally separate from `frontend/`: it is a Preact app
 compiled into the firmware's LittleFS image (see `web/`).
@@ -211,3 +211,20 @@ network and common ground before powering the board.
 - MQTT `TLS certificate verification failed` or `TLS/TCP error` → the host/IP in
   the MQTT panel is not in the server certificate SAN, the pasted CA is wrong,
   or the broker port/protocol does not match.
+
+## Dashboard
+
+The `frontend/` app is a read-only dashboard over the server's HTTP API. It
+shows every device, and battery monitors get per-cell voltages, spread, and
+history charts (1 h to 30 d). Unknown device types fall back to a generic
+key/value view so new sensors appear without frontend changes.
+
+```sh
+cd frontend
+npm ci
+npm run dev      # http://localhost:5173, proxies /api to localhost:8080
+```
+
+Start the server first. There is no authentication, so keep the dashboard and
+API on the trusted LAN. See [`frontend/README.md`](frontend/README.md) for
+ranges, polling, and build details.
